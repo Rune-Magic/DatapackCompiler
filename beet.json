@@ -1,0 +1,12 @@
+{
+    "name": "Test for Compiler",
+    "id": "test",
+    "description": "A test :3",
+    "version": "0.1",
+    "author": "somebody unkown",
+    "output": "tmp",
+    "data_pack": {
+        "load": ["test"]
+    },
+    "pipeline": ["compiler"]
+}
