@@ -84,11 +84,11 @@ class Depots:
         {self.commands.package()}
         """
 
-def compile(command: mecha.AstCommand, parser: mecha.Mecha, depots: Depots, functions: list[tuple]) -> tuple[str, list[str], bool]:
+def compile(command: mecha.AstCommand, parser: mecha.Mecha, depots: Depots, functions: list[tuple]) -> tuple[str, list[str], "Walker"]:
     global counter
     key = parser.serialize(command)
     if key in depots.commands:
-        return (depots.commands[key][1], [], depots.commands[key][2])
+        return depots.commands[key][1], depots.commands[key][2], depots.commands[key][3]
     name = f"command_{counter}"
     counter += 1
     walker = Walker(
@@ -127,7 +127,7 @@ def compile(command: mecha.AstCommand, parser: mecha.Mecha, depots: Depots, func
     if walker.reqiures_macros: name += ", CompoundTag marcos"
     name += ")"
     walker.output = f"""
-        private static {'MaybeReturn' if walker.returns == Maybe else 'int'} {name} {{
+        private static {'MaybeReturn' if walker.returns == Maybe else 'int'} {name} throws CommandSyntaxException {{
             int result = 0;
             {out}
             return {'new MaybeReturn(false, ' if walker.returns == Maybe else '('}result);
@@ -139,8 +139,8 @@ def compile(command: mecha.AstCommand, parser: mecha.Mecha, depots: Depots, func
     elif walker.returns == Maybe:
         name = f"if ({name}.out() instanceof Integer integer) return integer;"
     name += f"; // {key}\n"
-    depots.commands[key] = (walker.output, name, walker.returns)
-    return (name, walker.macros, walker.returns)
+    depots.commands[key] = (walker.output, name, walker.macros, walker)
+    return (name, walker.macros, walker)
 
 Maybe: Literal["Maybe"] = "Maybe"
 @dataclass
@@ -388,7 +388,7 @@ def selector(node: mecha.AstNode, walker: Walker, single: bool, player = False) 
         nonlocal predicates
         invert = "!" if inverted else ""
         predicates +=  f"""entity -> {{
-            if (entity instanceof ServerPlayer player) {{
+            if (entity instanceof ServerPlayer) {{
                 {before}
                 return {invert}{predicate};
             }}
@@ -455,11 +455,11 @@ def selector(node: mecha.AstNode, walker: Walker, single: bool, player = False) 
                             end = (f"TagKey.create(Registries.ENTITY_TYPE, {resource_location(arg.value, walker)})")
                         add_predicate(f"entity.getType().is({end})", arg.inverted)
                 case "gamemode":
-                    add_player_predicate(f'player.gameMode.getGameModeForPlayer() == GameType.byName("{arg.value.value}")', arg.inverted)
+                    add_player_predicate(f'entity.gameMode.getGameModeForPlayer() == GameType.byName("{arg.value.value}")', arg.inverted)
                 case "advancements":
                     for match in arg.value.advancements:
                         if isinstance(match.value, mecha.AstBool):
-                            add_player_predicate(f'player.getAdvancements().getOrStartProgress(Objects.requireNonNull(entity.getServer().getAdvancements().tree().get({resource_location(match.key, walker)})).holder()).isDone()', match.value.value)
+                            add_player_predicate(f'entity.getAdvancements().getOrStartProgress(Objects.requireNonNull(entity.getServer().getAdvancements().tree().get({resource_location(match.key, walker)})).holder()).isDone()', match.value.value)
                         else: 
                             completed = ""
                             unfinished = ""
@@ -477,7 +477,7 @@ def selector(node: mecha.AstNode, walker: Walker, single: bool, player = False) 
                                 final boolean[] valid = {{true}};
                                 var completed = List.of({completed});
                                 var unfinished = List.of({unfinished});
-                                player.getAdvancements().getOrStartProgress(Objects.requireNonNull(entity.getServer().getAdvancements().tree().get({resource_location(match.key, walker)})).holder()).getCompletedCriteria().forEach(it -> {{
+                                entity.getAdvancements().getOrStartProgress(Objects.requireNonNull(entity.getServer().getAdvancements().tree().get({resource_location(match.key, walker)})).holder()).getCompletedCriteria().forEach(it -> {{
                                     if (!valid[0]) return;
                                     valid[0] = completed.contains(it) || !unfinished.contains(it);
                                 }});
@@ -488,7 +488,7 @@ def selector(node: mecha.AstNode, walker: Walker, single: bool, player = False) 
                 case "name":
                     add_predicate(f'entity.getName().getString().equals("{arg.value.value}")', arg.inverted)
                 case "level":
-                    add_player_predicate(f'{range_doubles(arg.value, walker)}.matches(player.experienceLevel)')
+                    add_player_predicate(f'{range_doubles(arg.value, walker)}.matches(entity.experienceLevel)')
                 case "sort":
                     match arg.value.value:
                         case "nearest": 
@@ -621,7 +621,7 @@ def nbt_path(root: str, node: mecha.AstNbtPath, walker: Walker, *, single: bool)
             elif isinstance(component.index, mecha.AstNumber):
                 root = f"((ListTag) {root}).get({component.index.value})"
             elif isinstance(component.index, mecha.AstNbtCompound):
-                root = f"((ListTag) {root}).stream().filter(tag -> tag instanceof CompoundTag compound && nbtMatches(compound, {nbt(component.index, walker)})).collect(Collectors.toList())"
+                root = f"((ListTag) {root}).stream().filter(tag -> tag instanceof CompoundTag && nbtMatches(tag, {nbt(component.index, walker)})).collect(Collectors.toList())"
                 if single:
                     root = f"((ListTag) {root}).get(0)"
                 pack = False
@@ -702,6 +702,7 @@ def macro(walker: Walker):
     walker.output = f"dispatcher.execute(dispatcher.parse({command[:-3]}, source));"
     walker.macros = macros
     walker.reqiures_macros = True
+    walker.reqiures_dispatcher = True
 
 def say(walker: Walker):
     template = """
@@ -727,7 +728,7 @@ def tp(walker: Walker):
         nonlocal end
         value = selector(node, walker, False)
         walker.output += f"""
-            for (var entity : {value}) {{
+            for (entity in {value}) {{
                 source = source.withEntity(entity);
             """
         end += "}"
@@ -744,7 +745,7 @@ def kill(walker: Walker):
         has_targets = True
         value = selector(node, walker, False)
         walker.output += f"""
-            for (var entity : {value}) {{
+            for (entity in {value}) {{
                 entity.kill();
             }}
         """
@@ -756,7 +757,7 @@ def give(walker: Walker):
     count_ = 1
     stack = None
     def targets(node: mecha.AstNode):
-        walker.output += f"for (var player : {selector(node, walker, single=False, player=True)}) {{\n"
+        walker.output += f"for (player in {selector(node, walker, single=False, player=True)}) {{\n"
     def item(node: mecha.AstItemStack):
         nonlocal stack
         stack = item_stack(node, walker, count="%i")
@@ -830,18 +831,20 @@ def execute(walker: Walker):
             """
     # ------------
     def subcommand(cmd: mecha.AstCommand):
-        statement, _, returns = compile(
+        statement, _, subwalker = compile(
             cmd, 
             walker.parser, 
             walker.depots, 
             walker.functions
         )
-        if returns == True or returns == Maybe: 
-            walker.returns = Maybe
-            if returns == True:
+        if subwalker.returns == True or subwalker.returns == Maybe: 
+            subwalker.returns = Maybe
+            if walker.returns == True:
                 walker.output += statement.replace("return ", "return new MaybeReturn(true, ", 1).replace(";", ");", 1)
         else:
             walker.output += statement
+        walker.reqiures_dispatcher = subwalker.reqiures_dispatcher
+        walker.reqiures_macros = subwalker.reqiures_macros
         return True
     def align():
         swizzle: str = walker.next(axes=lambda node: node.value)
@@ -872,13 +875,13 @@ def execute(walker: Walker):
     def on():
         walker.output += walker.next(
             attacker=lambda: optional("(source.getEntityOrException() instanceof Attackable e ? Optional.ofNullable(e.getLastAttacker()) : Optional.empty())"),
-            controller=lambda: "source = source.withEntity(source.getEntityOrException().getControllingPassenger()));\n",
+            controller=lambda: "source = source.withEntity(source.getEntityOrException().getControllingPassenger());\n",
             leasher=lambda: optional("(source.getEntityOrException() instanceof Leashable e ? Optional.ofNullable(e.getLeashHolder()) : Optional.empty())"),
             origin=lambda: optional("(source.getEntityOrException() instanceof TraceableEntity e ? Optional.ofNullable(e.getOwner()) : Optional.empty())"),
             owner=lambda: optional("(source.getEntityOrException() instanceof OwnableEntity e ? Optional.ofNullable(e.getOwner()) : Optional.empty())"),
             passengers=lambda: fork("source.getEntityOrException().getPassengers()"),
             target=lambda: optional("(source.getEntityOrException() instanceof Targeting e ? Optional.ofNullable(e.getTarget()) : Optional.empty())"),
-            vehicle=lambda: "source = source.withEntity(source.getEntityOrException().getVehicle()));\n",
+            vehicle=lambda: "source = source.withEntity(source.getEntityOrException().getVehicle());\n",
         )
     def positioned():
         def pos(node: mecha.AstVector3):
@@ -888,7 +891,7 @@ def execute(walker: Walker):
             walker.output += fork(entities, "source = source.withPosition(entity.position());\n")
         def over():
             map = walker.next(heightmap=heightmap)
-            walker.output += f"source = source.withPosition(source.getLevel().getHeightmapPos({map}, new BlockPos(toVec3i(source.getPosition()))));\n"
+            walker.output += f"source = source.withPosition(Vec3.atCenterOf(source.getLevel().getHeightmapPos({map}, new BlockPos(toVec3i(source.getPosition())))));\n"
         walker.next(pos=pos, over=over, **{"as": as_})
     def rotated():
         def pos(node: mecha.AstVector2):
@@ -904,12 +907,12 @@ def execute(walker: Walker):
             tag_tmp.putString("id", "{type}");
             source = source.withEntity(Objects.requireNonNull(BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.withDefaultNamespace("")).loadEntityRecursive(tag_tmp, source.getLevel(), entity -> {{
                 entity.setPos(source.getPosition());
-                if (entity instanceof Mob mob) // randomize data ._.
-                    mob.finalizeSpawn(source.getLevel(), source.getLevel().getCurrentDifficultyAt(entity.blockPosition()), MobSpawnType.COMMAND, null);
+                if (entity instanceof Mob) // randomize data ._.
+                    entity.finalizeSpawn(source.getLevel(), source.getLevel().getCurrentDifficultyAt(entity.blockPosition()), MobSpawnType.COMMAND, null);
                 return entity;
             }})));
         """
-    def execute_if(walker: Walker, contiune_if: bool):
+    def if_(contiune_if: bool):
         walker.output += "if ("
         if not contiune_if: walker.output += "!"
         def biome():
@@ -977,13 +980,14 @@ def execute(walker: Walker):
         "positioned": positioned,
         "rotated": rotated,
         "summon": summon,
-        "if": lambda: execute_if(walker, True, [end]),
-        "unless": lambda: execute_if(walker, False, [end]),
+        "if": lambda: if_(True),
+        "unless": lambda: if_(False),
         "run": lambda: None,
     })
-    exists = walker.next(subcommand=subcommand)
-    if exists is None:
-        if out is None:
-            raise NotImplementedError("'out' is 'None' despite there being no following subcommand")
-        walker.output += out
+    if out != True:
+        exists = walker.next(subcommand=subcommand)
+        if exists is None:
+            if out is None:
+                raise NotImplementedError("'out' is 'None' despite there being no following subcommand")
+            walker.output += out
     walker.output += end

@@ -38,7 +38,7 @@ def beet_default(ctx: beet.Context):
     shutil.rmtree("out")
     shutil.copytree("template", "out")
     os.makedirs(os.path.join("out/src/main/java/datapack/", name))
-    with open("out/src/main/java/datapack/" + name + "/EntryPoint.java", "x") as f:
+    with open("out/src/main/java/datapack/" + name + "/EntryPoint.groovy", "x") as f:
         if len(compiled_list) > 0:
             compiled_list = compiled_list[:-2]
         else:

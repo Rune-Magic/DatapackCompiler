@@ -107,14 +107,15 @@ public class EntryPoint implements ModInitializer {{
         }}
     }}
 
-    private static boolean nbtMatches(CompoundTag original, CompoundTag with)  {{
-        for (var key : original.getAllKeys()) {{
+    private static boolean nbtMatches(CompoundTag original, CompoundTag with) {{
+        for (key in original.getAllKeys()) {{
             if (!with.contains(key)) continue;
-            TagType<?> o = original.get(key).getType();
-            TagType<?> w = with.get(key).getType();
+            TagType<? extends Tag> o = original.get(key).getType();
+            TagType<? extends Tag> w = with.get(key).getType();
             if (o != w) return false;
-            if (original.get(key) instanceof CollectionTag<?> collectionTag) {{
-                if (!nbtMatches(collectionTag, ((CollectionTag<?>)with.get(key))))
+            var item = original.get(key);
+            if (item instanceof CollectionTag<? extends Tag>) {{
+                if (!nbtMatches(item, ((CollectionTag<? extends Tag>)with.get(key))))
                     return false;
             }} else if (o == CompoundTag.TYPE) {{
                 if (!nbtMatches(original.getCompound(key), with.getCompound(key)))
@@ -128,7 +129,7 @@ public class EntryPoint implements ModInitializer {{
     }}
     private static boolean nbtMatches(CollectionTag<?> original, CollectionTag<?> with) {{
         int i = 0;
-        for (var tag : with) {{
+        for (tag in with) {{
             if (!original.contains(tag)) return false; //TODO: confirm
             i++;
         }}
@@ -143,19 +144,19 @@ public class EntryPoint implements ModInitializer {{
 
         return new Vec2(pitch * (180F / (float) Math.PI), yaw * (180F / (float) Math.PI));
     }}
-    
+
     private static Vec3i toVec3i(Vec3 vec3) {{
         return new Vec3i((int) vec3.x(), (int) vec3.y(), (int) vec3.z());
     }}
-    
+
     private static CompoundTag returnIfMatches(Tag value, CompoundTag with) {{
-        if (value instanceof CompoundTag compound)
-            return nbtMatches(compound, with) ? compound : new CompoundTag();
+        if (value instanceof CompoundTag)
+            return nbtMatches(value, with) ? value : new CompoundTag();
         return new CompoundTag();
     }}
-    
+
     private record MaybeReturn(boolean maybe, int value) {{
-        public Object out() {{
+        Object out() {{
             if (maybe)
                 return (Integer) value;
             return null;
