@@ -163,6 +163,8 @@ public class EntryPoint implements ModInitializer {{
         }}
     }}
     
+    class Termination extends Exception {{ }}
+    
     private static int function(CommandSourceStack source, String id, CompoundTag marcos, CommandDispatcher<CommandSourceStack> dispatcher) throws CommandSyntaxException {{
 		switch (id) {{
 			{commands}

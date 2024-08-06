@@ -606,7 +606,6 @@ def access_data(walker: Walker) -> str:
     return output
 
 def nbt_path(root: str, node: mecha.AstNbtPath, walker: Walker, *, single: bool):
-    pack = True
     for component in node.components:
         pack = True
         if isinstance(component, mecha.AstNbtPathKey):
@@ -626,6 +625,7 @@ def nbt_path(root: str, node: mecha.AstNbtPath, walker: Walker, *, single: bool)
                     root = f"((ListTag) {root}).get(0)"
                 pack = False
             else: raise
+    root = f"Objects.requireNonNull({root})"
     if pack and not single:
         return f"List.of({root})"
     return root
@@ -633,22 +633,16 @@ def nbt_path(root: str, node: mecha.AstNbtPath, walker: Walker, *, single: bool)
 def facing(walker: Walker):
     def facingLocation(node: mecha.AstVector3):
         value = vec3("source.getAnchor().apply(source)", "source.getRotation()", node)
-        walker.output += f"""
-            var rot = rotationFromDirection(Vec3.directionFromRotation(source.getRotation()).vectorTo({value}).normalize());
-            source.getEntityOrException().absRotateTo(rot.y, rot.x);
-        """
+        walker.output += f"source = source.facing({value});\n"
     def entity():
         def facingEntity(node: mecha.AstNode):
             value = selector(node, walker, True)
-            anchor = ".position()"
+            anchor = "EntityAnchorArgument.Anchor.FEET"
             def facingAnchor(node: mecha.AstEntityAnchor):
                 nonlocal anchor
                 anchor = entity_anchor(node)
             walker.next(facingAnchor=facingAnchor)
-            walker.output += f"""
-                var rot = rotationFromDirection(Vec3.directionFromRotation(source.getRotation()).vectorTo({anchor}.apply({value})).normalize());
-                source.getEntityOrException().absRotateTo(rot.y, rot.x);
-            """
+            walker.output += f"source = source.facing({value}, {anchor});\n"
         walker.next(facingEntity=facingEntity)
     walker.next(facingLocation=facingLocation, entity=entity)
     
@@ -685,6 +679,42 @@ def block_predicate(node: mecha.AstBlock, walker: Walker) -> str:
         out += f".hasNbt({nbt(node.data_tags, walker)})"
     out += ".build();\n}\n"
     return name
+
+def run_function(node: mecha.AstResourceLocation, walker: Walker, *, on_error = "throw new RuntimeException(e);", macros = "new CompoundTag();", post_exec = "") -> str:
+    call: str = None
+    location = resource_location(node, walker)
+    if node.is_tag:
+        call = f"""
+            source.getServer().getFunctions().getTag({location}).forEach(func -> {{
+                int executionResult;
+                try {{
+                    if (COMPILED.contains(func.id().toString())) {{
+                        executionResult = function(source, func.id().toString(), {macros}, dispatcher);
+                    }} else {{
+                        executionResult = func.instantiate({macros}, dispatcher);
+                    }}
+                }} catch (Exception e) {{
+                    {on_error}
+                }}
+                {post_exec}
+            }});
+            """
+    else:
+        call = "int executionResult;\ntry {{\n"
+        raw = walker.parser.serialize(node)
+        for func in walker.functions:
+            if func[0] == raw:
+                call += f'executionResult = function(source, "{raw}", {macros}, dispatcher);\n'
+                break
+        else:
+            call += f'executionResult = source.getServer().getFunctions().get({location}).orElseThrow().instantiate({macros}, dispatcher);'
+        call += f"""
+            }} catch (Exception e) {{
+                {on_error}
+            }}
+            {post_exec}
+        """
+    return call
 
 ##################
 
@@ -774,33 +804,7 @@ def function(walker: Walker):
     macros = "new CompoundTag()"
     def name(node: mecha.AstResourceLocation):
         nonlocal call
-        location = resource_location(node, walker)
-        if node.is_tag:
-            call = f"""source.getServer().getFunctions().getTag({location}).forEach(func -> {{
-                    try {{
-                        if (COMPILED.contains(func.id().toString())) {{
-                            function(source, func.id().toString(), {{0}}, dispatcher);
-                        }} else {{
-                            func.instantiate({{0}}, dispatcher);
-                        }}
-                    }} catch (Exception e) {{
-                        throw new RuntimeException(e);
-                    }}
-            }});"""
-        else:
-            call = "try {{\n"
-            raw = walker.parser.serialize(node)
-            for func in walker.functions:
-                if func[0] == raw:
-                    call += f'function(source, "{raw}", {{0}}, dispatcher);'
-                    break
-            else:
-                call += f'source.getServer().getFunctions().get({location}).orElseThrow().instantiate({{0}}, dispatcher);'
-            call += """
-                }} catch (Exception e) {{
-                    throw new RuntimeException(e);
-                }}
-            """
+        call = run_function(node, walker, macros="{0}")
         walker.next(**{"with": with_, "arguments": arguments})
     def with_():
         nonlocal macros
@@ -912,27 +916,34 @@ def execute(walker: Walker):
                 return entity;
             }})));
         """
-    def if_(contiune_if: bool):
-        walker.output += "if ("
-        if not contiune_if: walker.output += "!"
+    def if_(is_if: bool):
+        condition = ""
         def biome():
+            nonlocal condition
             pos = walker.next(pos=lambda node: vec3(node, vec3i=True))
             res = walker.next(biome=lambda node: (node.is_tag, resource_location(node, walker)))
             if res[0]:
                 res = f"TagKey.create(Registries.BIOME, {res[1]})"
             else:
                 res = res[1]
-            walker.output += f"source.getLevel().getBiome(new BlockPos({pos})).is({res})"
-            return 
+            walker.output += f"var blockpos = new BlockPos({pos});\n"
+            condition += f"source.getLevel().isLoaded(blockpos) && source.getLevel().getBiome(blockpos).is({res})"
+            return "result = 1;\n"
         def block():
+            nonlocal condition
             pos = f"new BlockPos({walker.next(pos=lambda node: vec3(node, vec3i=True))})"
-            walker.output += walker.next(block=lambda node: block_predicate(node, walker)) + f".matches(source.getLevel(), {pos})"
+            condition += "source.getLevel().isLoaded(blockpos) && " \
+                + walker.next(block=lambda node: block_predicate(node, walker)) \
+                + f".matches(source.getLevel(), {pos})"
+            return "result = 1;\n"
         def blocks():
-            walker.output += "((Supplier<Boolean>) () -> {\n"
+            nonlocal condition
+            condition += "((Supplier<Boolean>) () -> {\n"
             start = walker.next(start=lambda node: vec3(node, vec3i=True))
             end = walker.next(end=lambda node: vec3(node, vec3i=True))
             destination = walker.next(destination=lambda node: vec3(node, vec3i=True))
-            walker.output += f"""
+            if is_if: walker.output += "int totalBlocks = 0;"
+            condition += f"""
                 var original = BoundingBox.fromCorners({start}, {end});
                 Vec3i destenation = {destination};
                 Vec3i length = original.getLength();
@@ -946,8 +957,8 @@ def execute(walker: Walker):
                             if (!source.getLevel().isLoaded(original_pos) || !source.getLevel().isLoaded(compare_pos)) return false;
                             var original_state = source.getLevel().getBlockState(original_pos);
             """
-            walker.output += walker.next(all=lambda: "", masked=lambda: "if (original_state.isAir()) continue;\n")
-            walker.output += """
+            condition += walker.next(all=lambda: "", masked=lambda: "if (original_state.isAir()) continue;\n")
+            condition += """
                             var compare_state = source.getLevel().getBlockState(compare_pos);
                             if (original_state != compare_state) return false; //sus
                             var original_entity = source.getLevel().getBlockEntity(original_pos);
@@ -955,16 +966,57 @@ def execute(walker: Walker):
                             var compare_entity = source.getLevel().getBlockEntity(compare_pos);
                             if (compare_entity == null) return false;
                             if (!original_entity.components().equals(compare_entity.components())) return false;
+                            %s
                         }
                     return true;
                 }).get()
-            """
+            """ % "totalBlocks++;" if is_if else ""
+            if is_if:
+                return "result = totalBlocks;\n"
+            else:
+                return "result = 1;\n"
+        def data():
+            nonlocal condition
+            walker.output += """
+                boolean exists;
+                int totalMatches;
+                try {
+                    var tags = %s;
+                    exists = tags.size() > 0;
+                    totalMatches = tags.size();
+                } catch (NullPointerException | IndexOutOfBoundsException e) {
+                    exists = false;
+                }
+            """ % nbt_path(access_data(walker), walker.next(path=lambda node: node), walker, single=False)
+            condition += "exists"
+            if is_if:
+                return "result = totalMatches;\n"
+            else:
+                return "result = 1;\n"
+        def dimension():
+            nonlocal condition
+            condition += "source.getLevel() == source.getServer().getLevel(ResourceKey.create(Registries.DIMENSION, %s))" \
+                % resource_location(walker.next(dimension=lambda node: node), walker)
+            return "result = 1;\n"
+        def entity():
+            nonlocal condition
+            walker.output += "int matches = %s.size();\n" % selector(walker.next(entities=lambda node: node), walker, single=False)
+            condition += "matches > 0" 
+            if is_if:
+                return "result = matches;\n"
+            else:
+                return "result = 1;\n"
+        def function():
+            nonlocal condition
+            
         out = walker.next(
             biome=biome,
             block=block,
             blocks=blocks,
+            data=data,
+            dimension=dimension,
         )
-        walker.output += ") {\n"
+        walker.output += f"if ({'' if is_if else '!'}({condition})) {{\n"
         nonlocal end
         end = "}\n" + end
         return out
