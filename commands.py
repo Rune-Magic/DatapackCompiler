@@ -445,7 +445,7 @@ def selector(node: mecha.AstNode, walker: Walker, single: bool, player = False) 
                 case "y_rotation":
                     add_predicate(f'{range_doubles(arg.value, walker)}.matches(entity.getYRot())')
                 case "type":
-                    if arg.value.path == "player" and (arg.value.namespace == None or arg.value.namespace == "minecraft"):
+                    if (not arg.inverted) and arg.value.path == "player" and (arg.value.namespace == None or arg.value.namespace == "minecraft"):
                         includesEntities = "false"
                     else:
                         end = ""
