@@ -3,7 +3,7 @@
     "id": "test",
     "description": "A test :3",
     "version": "0.1",
-    "author": "somebody unkown",
+    "author": "somebody unknown",
     "output": "tmp",
     "data_pack": {
         "load": ["test"]
